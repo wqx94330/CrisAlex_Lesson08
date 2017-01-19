@@ -1,0 +1,155 @@
+---
+title: "Lesson8_teamCrisAlex"
+author: "Cristina Gonzalez"
+date: "January 19, 2017"
+output: html_document
+---
+This project is created for the Lesson 8 in the course of Geo-scripting
+
+Library needed
+```{r}
+library(sp)
+library(raster)
+```
+```{r}
+filePathData = "data"
+filePathOut = "output"
+if(!dir.exists(file.path(filePathData))){ dir.create(filePathData)}
+if(!dir.exists(file.path(filePathOut))){ dir.create(filePathOut)}
+```
+
+
+Download all the files
+```{r}
+Git_L="https://github.com/GeoScripting-WUR/AdvancedRasterAnalysis/raw/gh-pages/data/"
+```
+
+```{r}
+download.file(paste0(Git_L,"GewataB1.rda"), destfile = "data/GewataB1.rda", method = "auto")
+download.file(paste0(Git_L,"GewataB2.rda"), destfile = "data/GewataB2.rda", method = "auto")
+download.file(paste0(Git_L,"GewataB3.rda"), destfile = "data/GewataB3.rda", method = "auto")
+download.file(paste0(Git_L,"GewataB4.rda"), destfile = "data/GewataB4.rda", method = "auto")
+download.file(paste0(Git_L,"GewataB5.rda"), destfile = "data/GewataB5.rda", method = "auto")
+download.file(paste0(Git_L,"GewataB7.rda"), destfile = "data/GewataB7.rda", method = "auto")
+download.file(paste0(Git_L,"vcfGewata.rda"), destfile = "data/vcfGewata.rda", method = "auto")
+download.file(paste0(Git_L,"trainingPoly.rda"), destfile = "data/trainingPoly.rda", method = "auto")
+```
+
+Load all the files
+```{r}
+load("data/GewataB1.rda")
+load("data/GewataB2.rda")
+load("data/GewataB3.rda")
+load("data/GewataB4.rda")
+load("data/GewataB5.rda")
+load("data/GewataB7.rda")
+load("data/vcfGewata.rda")
+```
+
+Build a brick that contains all the rasters
+```{r}
+alldata <- brick(GewataB1, GewataB2, GewataB3, GewataB4, GewataB5, GewataB7, vcfGewata)
+names(alldata) <- c("band1", "band2", "band3", "band4", "band5", "band7", "VCF")
+```
+
+Remove all the values above 100 in VCF becaue it is a cover explained in percent
+```{r}
+alldata$VCF[alldata$VCF > 100] <- NA
+```
+
+We brick again all the raster with the new VCf without the higher values and then visualize the graph with all the correlations between the bands and with VCF to know later how to create the model.
+```{r}
+pairs(alldata)
+
+```
+
+Create all the histogram to see the distribution of the data
+```{r}
+hist(alldata)
+```
+
+Create a data frame with all the bands and VCD and extract them, necessary for next step
+```{r}
+df <- as.data.frame(getValues(addLayer(GewataB1, GewataB2, GewataB3, GewataB4, GewataB5, GewataB7, alldata$VCF)))
+names(df) <- c("band1", "band2", "band3", "band4", "band5", "band7", "VCF")
+```
+
+
+Create the model with the function Lineal regression (lm()) all data related with VCF. In the output we can see the signification of each bands related with VCF and the R-squaren that determines the variance explained by your model.
+```{r}
+model <- lm(VCF ~ band1 + band2 + band3 + band4 + band5 + band7, data = df)
+summary(model)
+```
+
+Create a new model without the band 7 that is not significat, although the R-square is the same than last model 
+```{r}
+model2 <- lm(VCF ~ band3 + band4 + band5, data = df)
+summary(model2)
+```
+
+Now with the generated model we predict the VCF with the function predict() and remove the negative values.
+```{r}
+predict_VCF <- predict(alldata, model2, na.rm = TRUE)
+summary(predict_VCF)
+predict_VCF[predict_VCF < 0] <- NA
+
+```
+
+Visualize the predicted VCf and the original VCF
+```{r}
+par(mfrow = c(1,2))
+plot(predict_VCF, main = "Predicted VCF")
+plot(alldata$VCF, main = "Original VCF")
+par(mfrow = c(1,1))
+```
+
+To compare these two rasters we subset the predicted from the original to see better the differences. In this case, the differences are not really big.
+```{r}
+diff_raster <- (alldata$VCF - predict_VCF)
+plot(diff_raster, main = "Difference between Predicted VCF and Original VCF")
+```
+
+Calculate RMSE between the predicted and the original tree cover values (VCF)
+```{r}
+predict_VCF_df <- as.data.frame(predict_VCF)
+ori_VFC_df <- as.data.frame(alldata$VCF)
+RMSE <- sqrt( mean( (ori_VFC_df - predict_VCF_df)^2 , na.rm = TRUE ) )
+print(paste("The RMSE between the predicted VCF and the Original VCF is", RMSE))
+```
+
+Next step is to obtain the RMSE but for the three classes present in the training polygons. For that, we need to prepare first this layer.
+```{r}
+load("data/trainingPoly.rda")
+trainingPoly@data$Code <- as.numeric(trainingPoly@data$Class)
+trainingPoly@data
+```
+
+Rasterize the training areas based on the raster "alldata"
+```{r}
+classes <- rasterize(trainingPoly, alldata, field='Code')
+```
+
+we need the mean for the calculation of the RMSE, the function zonal() take the mean of the classes in each VCF, in the predicted and in the original. Later we create a data frame with the result od the zonal.
+```{r}
+predictVCF_zonal <- zonal(predict_VCF, classes, fun = mean, na.rm = TRUE)
+originalVCF_zonal <- zonal(alldata$VCF, classes, fun = mean, na.rm = TRUE)
+predictVCF_zonal_df <- as.data.frame(predictVCF_zonal)
+originalVCF_zonal_df <- as.data.frame(originalVCF_zonal)
+```
+
+Calculate the RMSE for each class with the last data frame and specifying the classes.
+```{r}
+RMSE_class1 <- sqrt( mean( (originalVCF_zonal_df[1,2] - predictVCF_zonal_df[1,2])^2 , na.rm = TRUE ) )
+RMSE_class2 <- sqrt( mean( (originalVCF_zonal_df[2,2] - predictVCF_zonal_df[2,2])^2 , na.rm = TRUE ) )
+RMSE_class3 <- sqrt( mean( (originalVCF_zonal_df[3,2] - predictVCF_zonal_df[3,2])^2 , na.rm = TRUE ) )
+print(paste("The Cropland RMSE between the predicted VCF and the Original VCF is", RMSE_class1))
+print(paste("The Forest RMSE between the predicted VCF and the Original VCF is", RMSE_class2))
+print(paste("The Wetland RMSE between the predicted VCF and the Original VCF is", RMSE_class3))
+```
+
+Create a matrix with the final results of the classes RMSE.
+```{r}
+RMSE_matrix <- matrix(c(1,2,3, round(RMSE_class1, digits = 2), round(RMSE_class2, digits = 2), round(RMSE_class3, digits = 2), "cropland", "forest", "wetland"), nrow = 3, ncol = 3)
+colnames(RMSE_matrix) <- c("Code", "RMSE", "Class")
+print(RMSE_matrix)
+```
